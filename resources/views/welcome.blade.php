@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sistem Pemantauan LiDAR</title>
+    <title>Sistem Pemantauan UPT PLN</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
@@ -16,7 +16,7 @@
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex items-center justify-center min-h-screen p-4">
     <div class="w-full max-w-4xl bg-white dark:bg-gray-800 shadow-xl rounded-2xl overflow-hidden">
         <div class="bg-indigo-600 p-6 text-white text-center">
-            <h1 class="text-3xl font-bold">Sistem Analisis LiDAR</h1>
+            <h1 class="text-3xl font-bold">Sistem Pemantauan UPT PLN</h1>
             <p class="mt-2 text-indigo-100">Upload file point cloud untuk menghitung data jarak dan pemetaan.</p>
         </div>
 
