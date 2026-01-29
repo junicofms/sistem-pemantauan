@@ -5,8 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Sistem Pemantauan UPT PLN</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <link href="https://fonts.bunny.net/css?family=instrument-sans:400,500,600" rel="stylesheet" />
     <style>
         body { font-family: 'Instrument Sans', sans-serif; }
@@ -113,7 +111,7 @@
 
                         <div class="mt-8">
                         <div class="flex justify-between items-center mb-2">
-                            <h3 class="text-lg font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Peta Sebaran Titik (Leaflet JS)</h3>
+                            <h3 class="text-lg font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Peta Sebaran Titik (Google Maps)</h3>
                             <div class="flex items-center gap-2">
                                 <div id="measure-result" class="text-sm font-bold text-indigo-600 dark:text-indigo-400"></div>
                                 <button type="button" id="measure-btn" onclick="toggleMeasure()" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition shadow-sm">
@@ -163,7 +161,7 @@
                                 <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
                                     @foreach (session('results')['raw_data'] as $index => $obj)
                                         @if($index < 50)
-                                        <tr>
+                                        <tr onclick="flyToLocation(this)" data-lat="{{ $obj['centroid_lat'] }}" data-lon="{{ $obj['centroid_lon'] }}" class="hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" style="cursor: pointer;">
                                             <td class="px-4 py-2">{{ $index + 1 }}</td>
                                             <td class="px-4 py-2">{{ number_format($obj['centroid_lat'], 6) }}</td>
                                             <td class="px-4 py-2">{{ number_format($obj['centroid_lon'], 6) }}</td>
@@ -189,8 +187,8 @@
         </div>
     </div>
     
-    <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+        <!-- Google Maps API -->
+    <script src="https://maps.googleapis.com/maps/api/js?key={{ config('services.google.maps_api_key') }}&libraries=drawing,geometry"></script>
     
     <script>
         function toggleUtmFields() {
@@ -220,9 +218,7 @@
         // Map and Measurement Logic
         let map;
         let measurementMode = false;
-        let startPoint = null;
-        let endPoint = null;
-        let measureMarkers = [];
+        let drawingManager;
         let measureLine = null;
 
         function toggleMeasure() {
@@ -233,28 +229,26 @@
                 btn.classList.add('bg-red-500');
                 btn.classList.remove('bg-indigo-600');
                 btn.innerText = 'Batal / Reset';
-                document.getElementById('map').style.cursor = 'crosshair';
+                drawingManager.setDrawingMode(google.maps.drawing.OverlayType.POLYLINE);
             } else {
                 resetMeasure();
                 btn.classList.add('bg-indigo-600');
                 btn.classList.remove('bg-red-500');
                 btn.innerText = 'Ukur Jarak Manual';
-                document.getElementById('map').style.cursor = '';
+                drawingManager.setDrawingMode(null);
             }
         }
 
         function resetMeasure() {
-            measureMarkers.forEach(m => map.removeLayer(m));
-            measureMarkers = [];
-            if (measureLine) map.removeLayer(measureLine);
-            startPoint = null;
-            endPoint = null;
+            if (measureLine) {
+                measureLine.setMap(null);
+                measureLine = null;
+            }
             document.getElementById('measure-result').innerText = '';
         }
 
         let searchMarker = null;
         function searchLocation() {
-            // Clean input: replace comma with dot, and remove spaces
             const rawLat = document.getElementById('search-lat').value.replace(',', '.').trim();
             const rawLon = document.getElementById('search-lon').value.replace(',', '.').trim();
             
@@ -271,14 +265,44 @@
                 return;
             }
 
-            // Move map with closer zoom
-            map.setView([lat, lon], 19);
+            const location = {lat: lat, lng: lon};
+            map.setCenter(location);
+            map.setZoom(19);
 
-            // Add/Move search marker
-            if (searchMarker) map.removeLayer(searchMarker);
-            searchMarker = L.marker([lat, lon]).addTo(map)
-                .bindPopup(`<b>Lokasi Dicari</b><br>Lat: ${lat}<br>Lon: ${lon}`)
-                .openPopup();
+            if (searchMarker) searchMarker.setMap(null);
+            searchMarker = new google.maps.Marker({
+                position: location,
+                map: map,
+                title: `Lokasi Dicari (Lat: ${lat}, Lon: ${lon})`
+            });
+        }
+
+        function flyToLocation(element) {
+            const lat = parseFloat(element.getAttribute('data-lat'));
+            const lon = parseFloat(element.getAttribute('data-lon'));
+
+            if (isNaN(lat) || isNaN(lon) || !map) return;
+            
+            const location = {lat: lat, lng: lon};
+            map.panTo(location);
+            map.setZoom(19);
+
+            const tempMarker = new google.maps.Marker({
+                position: location,
+                map: map,
+                icon: {
+                    path: google.maps.SymbolPath.CIRCLE,
+                    scale: 10,
+                    fillColor: "#4f46e5",
+                    fillOpacity: 0.6,
+                    strokeColor: '#312e81',
+                    strokeWeight: 1
+                }
+            });
+
+            setTimeout(() => {
+                tempMarker.setMap(null);
+            }, 2500);
         }
 
         @if(session('results'))
@@ -287,68 +311,115 @@
                 
                 if (objects.length > 0) {
                     const firstObj = objects[0];
-                    map = L.map('map').setView([firstObj.centroid_lat, firstObj.centroid_lon], 16);
+                    map = new google.maps.Map(document.getElementById('map'), {
+                        center: {lat: firstObj.centroid_lat, lng: firstObj.centroid_lon},
+                        zoom: 16,
+                        mapTypeId: 'satellite'
+                    });
 
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        attribution: '&copy; OpenStreetMap contributors'
-                    }).addTo(map);
+                    drawingManager = new google.maps.drawing.DrawingManager({
+                        drawingMode: null,
+                        drawingControl: false,
+                        polylineOptions: {
+                            strokeColor: '#FF0000',
+                            strokeWeight: 3,
+                            clickable: false,
+                            editable: true,
+                            zIndex: 1
+                        }
+                    });
+                    drawingManager.setMap(map);
+                    
+                    google.maps.event.addListener(drawingManager, 'overlaycomplete', function(event) {
+                        if (measureLine) measureLine.setMap(null);
+                        
+                        measureLine = event.overlay;
+                        
+                        const path = measureLine.getPath();
+                        let totalDistance = google.maps.geometry.spherical.computeLength(path);
 
-                    const towers = {}; // Map to store tower locations and data
+                        document.getElementById('measure-result').innerText = 'Jarak: ' + (totalDistance > 1000 ? (totalDistance/1000).toFixed(2) + ' km' : totalDistance.toFixed(2) + ' m');
 
-                    // Pass 1: Add Towers and Index them
+                        google.maps.event.addListener(path, 'insert_at', () => {
+                             totalDistance = google.maps.geometry.spherical.computeLength(path);
+                             document.getElementById('measure-result').innerText = 'Jarak: ' + (totalDistance > 1000 ? (totalDistance/1000).toFixed(2) + ' km' : totalDistance.toFixed(2) + ' m');
+                        });
+
+                        google.maps.event.addListener(path, 'set_at', () => {
+                             totalDistance = google.maps.geometry.spherical.computeLength(path);
+                             document.getElementById('measure-result').innerText = 'Jarak: ' + (totalDistance > 1000 ? (totalDistance/1000).toFixed(2) + ' km' : totalDistance.toFixed(2) + ' m');
+                        });
+                        
+                        drawingManager.setDrawingMode(null);
+                        measurementMode = false;
+                        const btn = document.getElementById('measure-btn');
+                        btn.classList.add('bg-indigo-600');
+                        btn.classList.remove('bg-red-500');
+                        btn.innerText = 'Ukur Jarak Manual';
+                    });
+
+                    const towers = {};
+                    const bounds = new google.maps.LatLngBounds();
+                    const infowindow = new google.maps.InfoWindow();
+
                     objects.forEach(obj => {
-                        if (obj.type === 'tower') {
-                            // Store tower data for lookup by trees
-                            towers[obj.name] = {
-                                lat: obj.centroid_lat,
-                                lon: obj.centroid_lon,
-                                height: obj.height
-                            };
+                        const position = {lat: obj.centroid_lat, lng: obj.centroid_lon};
+                        bounds.extend(position);
 
-                            const marker = L.circleMarker([obj.centroid_lat, obj.centroid_lon], {
-                                radius: 8,
-                                fillColor: "#ef4444",
-                                color: "#000",
-                                weight: 1,
-                                opacity: 1,
-                                fillOpacity: 0.8
-                            }).addTo(map);
-                            marker.bindPopup(`
+                        if (obj.type === 'tower') {
+                            towers[obj.name] = { lat: obj.centroid_lat, lon: obj.centroid_lon, height: obj.height };
+
+                            const marker = new google.maps.Marker({
+                                position: position,
+                                map: map,
+                                icon: {
+                                    path: google.maps.SymbolPath.CIRCLE,
+                                    scale: 8,
+                                    fillColor: "#ef4444",
+                                    fillOpacity: 0.8,
+                                    strokeColor: "#000",
+                                    strokeWeight: 1
+                                }
+                            });
+
+                            marker.addListener('click', () => {
+                                infowindow.setContent(`
                                 <div class="text-sm font-sans">
                                     <p class="font-bold text-red-600 mb-1 border-b border-gray-200 pb-1">${obj.name}</p>
                                     <p class="mt-1"><strong>Tinggi Tower:</strong> ${obj.height.toFixed(2)} m</p>
                                     <p class="text-xs text-gray-500 mt-1 italic">Titik Pusat Tower</p>
-                                </div>
-                            `);
+                                </div>`);
+                                infowindow.open(map, marker);
+                            });
                         }
                     });
 
-                    // Pass 2: Add Trees (Conflict Points) & Auto-Lines
                     objects.forEach(obj => {
                         if (obj.type === 'tree') {
-                            const treePos = [obj.centroid_lat, obj.centroid_lon];
-                            
-                            // Lookup nearest tower info
-                            let towerInfoHtml = '';
-                            let towerPos = null;
+                            const position = {lat: obj.centroid_lat, lng: obj.centroid_lon};
+                            bounds.extend(position);
 
+                            let towerInfoHtml = '';
                             if (obj.nearest_tower !== '-' && towers[obj.nearest_tower]) {
                                 const t = towers[obj.nearest_tower];
-                                towerPos = [t.lat, t.lon];
                                 towerInfoHtml = `<p><strong>Tinggi Tower:</strong> ${t.height.toFixed(2)} m</p>`;
                             }
 
-                            const marker = L.circleMarker(treePos, {
-                                radius: 6,
-                                fillColor: "#22c55e",
-                                color: "#000",
-                                weight: 1,
-                                opacity: 1,
-                                fillOpacity: 0.8
-                            }).addTo(map);
+                            const marker = new google.maps.Marker({
+                                position: position,
+                                map: map,
+                                icon: {
+                                    path: google.maps.SymbolPath.CIRCLE,
+                                    scale: 6,
+                                    fillColor: "#22c55e",
+                                    fillOpacity: 0.8,
+                                    strokeColor: "#000",
+                                    strokeWeight: 1
+                                }
+                            });
                             
-                            // Popup Content as requested: Tower Name, Tower Height, Tree Height, Proximity
-                            const popupContent = `
+                            marker.addListener('click', () => {
+                                infowindow.setContent(`
                                 <div class="text-sm font-sans min-w-[150px]">
                                     <p class="font-bold text-indigo-700 mb-1 border-b border-gray-200 pb-1">
                                         ${obj.nearest_tower !== '-' ? obj.nearest_tower : 'Data Objek'}
@@ -358,36 +429,13 @@
                                         <p><strong>Tinggi Pohon:</strong> ${obj.height.toFixed(2)} m</p>
                                         <p class="text-indigo-600"><strong>Kedekatan:</strong> ${obj.distance_to_tower.toFixed(2)} m</p>
                                     </div>
-                                </div>
-                            `;
-
-                            marker.bindPopup(popupContent);
-
-                            // Note: Automatic lines removed as tower coordinates are not available in current 4-col format
+                                </div>`);
+                                infowindow.open(map, marker);
+                            });
                         }
                     });
-
-                    // Manual measurement event
-                    map.on('click', function(e) {
-                        if (!measurementMode) return;
-                        if (!startPoint) {
-                            startPoint = e.latlng;
-                            measureMarkers.push(L.circleMarker(startPoint, { color: 'red', radius: 5 }).addTo(map));
-                        } else if (!endPoint) {
-                            endPoint = e.latlng;
-                            measureMarkers.push(L.circleMarker(endPoint, { color: 'red', radius: 5 }).addTo(map));
-                            measureLine = L.polyline([startPoint, endPoint], {color: 'red', weight: 3, dashArray: '5, 10'}).addTo(map);
-                            const dist = startPoint.distanceTo(endPoint);
-                            document.getElementById('measure-result').innerText = 'Jarak: ' + (dist > 1000 ? (dist/1000).toFixed(2) + ' km' : dist.toFixed(2) + ' m');
-                        } else {
-                            resetMeasure();
-                            startPoint = e.latlng;
-                            measureMarkers.push(L.circleMarker(startPoint, { color: 'red', radius: 5 }).addTo(map));
-                        }
-                    });
-
-                    const group = new L.featureGroup(Object.values(towers).length > 0 ? Object.values(towers).map(pos => L.marker(pos)) : objects.map(o => L.marker([o.centroid_lat, o.centroid_lon])));
-                    map.fitBounds(group.getBounds().pad(0.2));
+                    
+                    map.fitBounds(bounds);
                 }
             });
         @endif
