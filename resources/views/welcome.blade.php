@@ -388,6 +388,9 @@
                                     <p class="font-bold text-red-600 mb-1 border-b border-gray-200 pb-1">${obj.name}</p>
                                     <p class="mt-1"><strong>Tinggi Tower:</strong> ${obj.height.toFixed(2)} m</p>
                                     <p class="text-xs text-gray-500 mt-1 italic">Titik Pusat Tower</p>
+                                    <a href="https://www.google.com/maps/dir/?api=1&destination=${obj.centroid_lat},${obj.centroid_lon}" target="_blank" class="mt-2 inline-block bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-1 px-3 rounded-lg transition">
+                                        Arahkan
+                                    </a>
                                 </div>`);
                                 infowindow.open(map, marker);
                             });
@@ -429,6 +432,9 @@
                                         <p><strong>Tinggi Pohon:</strong> ${obj.height.toFixed(2)} m</p>
                                         <p class="text-indigo-600"><strong>Kedekatan:</strong> ${obj.distance_to_tower.toFixed(2)} m</p>
                                     </div>
+                                    <a href="https://www.google.com/maps/dir/?api=1&destination=${obj.centroid_lat},${obj.centroid_lon}" target="_blank" class="mt-2 inline-block bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-1 px-3 rounded-lg transition">
+                                        Arahkan
+                                    </a>
                                 </div>`);
                                 infowindow.open(map, marker);
                             });
