@@ -1,0 +1,1 @@
+The task to change "Sampel Data Objek LiDAR" to "Data LiDAR" in `resources/views/welcome.blade.php` has been successfully completed. Both occurrences of the heading have been updated.

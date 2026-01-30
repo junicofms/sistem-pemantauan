@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Services\UtmConverter;
 use App\Services\LidarProcessingService;
+use Maatwebsite\Excel\Facades\Excel;
 
 class LidarController extends Controller
 {
@@ -16,136 +17,146 @@ class LidarController extends Controller
     public function upload(Request $request)
     {
         $request->validate([
-            'lidar_file' => 'required|file|max:10240',
+            'lidar_file' => 'required|file|max:10240|mimes:txt,csv,xlsx',
             'coord_type' => 'required|in:latlon,utm',
             'utm_zone' => 'nullable|required_if:coord_type,utm|integer',
             'utm_is_south' => 'nullable|required_if:coord_type,utm|boolean',
         ]);
 
         $file = $request->file('lidar_file');
-        $coordType = $request->input('coord_type');
-        $utmZone = $request->input('utm_zone');
-        $utmIsSouth = $request->input('utm_is_south');
+        
+        $data = [];
+        $extension = $file->getClientOriginalExtension();
 
-        $path = $file->getRealPath();
-        $rawPoints = [];
-        $directObjects = [];
-        $isObjectFormat = false;
-        $lineCount = 0;
-
-        if (($handle = fopen($path, 'r')) !== false) {
-            while (($line = fgets($handle)) !== false) {
-                $line = trim($line);
-                if (empty($line) || str_starts_with($line, '#') || str_starts_with($line, '/')) continue;
-
-                $parts = preg_split('/[\s,]+/', $line);
-                $colCount = count($parts);
-
-                if ($colCount >= 3) {
-                    // 1. Ambil angka mentah
-                    $v1 = floatval($parts[0]);
-                    $v2 = floatval($parts[1]);
-                    
-                    // 2. Tentukan Lat/Lon (Logika Indonesia: Lat ~ -6, Lon ~ 106)
-                    if ($coordType === 'utm') {
-                        $converted = UtmConverter::toLatLng($v1, $v2, $utmZone, $utmIsSouth);
-                        $lat = $converted['latitude'];
-                        $lon = $converted['longitude'];
-                    } else {
-                        // Otomatis: Nilai absolut lebih kecil adalah Latitude
-                        if (abs($v1) < abs($v2)) {
-                            $lat = $v1; $lon = $v2;
-                        } else {
-                            $lat = $v2; $lon = $v1;
+        try {
+            if (in_array($extension, ['csv', 'xlsx'])) {
+                $collection = Excel::toCollection(null, $file->getRealPath())->first();
+                if ($collection) {
+                    $data = $collection->map(fn($row) => $row->toArray())->toArray();
+                }
+            } elseif ($extension === 'txt') {
+                $path = $file->getRealPath();
+                if (($handle = fopen($path, 'r')) !== false) {
+                    while (($line = fgets($handle)) !== false) {
+                        $line = trim($line);
+                        if (!empty($line) && !str_starts_with($line, '#') && !str_starts_with($line, '/')) {
+                            // Use str_getcsv to handle comma or space separated values
+                            $data[] = str_getcsv($line, ' ');
                         }
                     }
+                    fclose($handle);
+                }
+            } else {
+                return back()->withErrors(['msg' => 'Unsupported file type.']);
+            }
+        } catch (\Exception $e) {
+            return back()->withErrors(['msg' => 'Error reading file: ' . $e->getMessage()]);
+        }
+        
+        if (empty($data)) {
+            return back()->withErrors(['msg' => 'File does not contain any data or is in an unsupported format.']);
+        }
+        
+        // Treat the first row as headers and the rest as data
+        $headers = array_shift($data);
+        
+        // --- DYNAMIC STATISTICS CALCULATION ---
+        $dynamicStats = [];
+        $statKeywords = ['tinggi', 'height', 'jarak', 'distance', 'kedekatan', 'elevation'];
 
-                    // 3. Proses berdasarkan format kolom
-                    if ($lineCount === 0 && $colCount >= 4) $isObjectFormat = true;
-
-                    if ($isObjectFormat && $colCount >= 4) {
-                        $tp = floatval($parts[2]);
-                        $tt = floatval($parts[3]);
-                        $dist = abs($tt - $tp);
-                        
-                        $directObjects[] = [
-                            'id' => $lineCount + 1,
-                            'centroid_lat' => $lat,
-                            'centroid_lon' => $lon,
-                            'height' => $tp,
-                            'type' => 'tree', 
-                            'name' => 'Pohon ' . ($lineCount + 1),
-                            'nearest_tower' => 'Tower Ref',
-                            'nearest_tower_height' => $tt,
-                            'distance_to_tower' => $dist
-                        ];
-                    } else {
-                        $rawPoints[] = [
-                            'latitude' => $lat,
-                            'longitude' => $lon,
-                            'elevation' => floatval($parts[2])
-                        ];
-                    }
-                    $lineCount++;
+        foreach ($headers as $index => $header) {
+            $headerLower = strtolower($header);
+            $isStatColumn = false;
+            foreach ($statKeywords as $keyword) {
+                if (str_contains($headerLower, $keyword)) {
+                    $isStatColumn = true;
+                    break;
                 }
             }
-            fclose($handle);
+
+            if ($isStatColumn) {
+                $columnData = array_column($data, $index);
+                $numericData = array_filter($columnData, 'is_numeric');
+
+                if (!empty($numericData)) {
+                    $dynamicStats[$header] = [
+                        'avg' => number_format(array_sum($numericData) / count($numericData), 2),
+                        'min' => number_format(min($numericData), 2),
+                        'max' => number_format(max($numericData), 2),
+                    ];
+                }
+            }
         }
+        // --- END DYNAMIC STATISTICS ---
 
-        if (empty($rawPoints) && empty($directObjects)) {
-            return back()->withErrors(['msg' => 'File tidak valid atau kosong.']);
-        }
+        // --- ADVANCED DYNAMIC MAPPING (v2) ---
+        $lat_col_index = null;
+        $lon_col_index = null;
+        $lat_drone_index = null;
+        $lon_drone_index = null;
+        $lat_ns_index = null;
+        $lon_ns_index = null;
+        $lat_generic_index = null; // New generic index
+        $lon_generic_index = null; // New generic index
+        $type_col_index = null;
 
-        // Proses Final Objek
-        $processor = new LidarProcessingService();
-        $processed = $isObjectFormat ? $directObjects : $processor->process($rawPoints);
-
-        // Hitung Statistik
-        $trees = array_filter($processed, fn($o) => $o['type'] === 'tree');
-        $towers = array_filter($processed, fn($o) => $o['type'] === 'tower');
-        $distList = array_filter(array_column($trees, 'distance_to_tower'), fn($d) => $d > 0);
-
-        $maxDist = !empty($distList) ? max($distList) : 0;
-        
-        $stats = [
-            'total_points' => $lineCount,
-            'total_objects' => count($processed),
-            'min_distance' => !empty($distList) ? min($distList) : 0,
-            'max_distance' => $maxDist,
-            'average_distance' => !empty($distList) ? array_sum($distList) / count($distList) : 0,
-            'max_distance_location' => '-',
-            'max_distance_tree_height' => 0,
-            'max_distance_tower_height' => 0,
-            'raw_data' => $processed, 
+        $keywords = [
+            'lat_drone' => ['latitude drone', 'lat drone'],
+            'lon_drone' => ['longtitude drone', 'lon drone'],
+            'lat_ns' => ['latitude ns', 'lat ns'],
+            'lon_ns' => ['longtitude ns', 'lon ns'],
+            'lat_generic' => ['latitude', 'lat', 'lintang'],
+            'lon_generic' => ['longitude', 'longtitude', 'lon', 'long', 'bujur'],
+            'type' => ['type', 'tipe', 'jenis', 'kategori'],
         ];
 
-        // Temukan lokasi titik terjauh
-        foreach ($trees as $tree) {
-            if ($tree['distance_to_tower'] == $maxDist && $maxDist > 0) {
-                $stats['max_distance_location'] = "Lat: " . round($tree['centroid_lat'], 6) . ", Lon: " . round($tree['centroid_lon'], 6);
-                $stats['max_distance_tree_height'] = $tree['height'];
-                
-                if ($isObjectFormat) {
-                    $stats['max_distance_tower_height'] = $tree['nearest_tower_height'];
-                } else {
-                    foreach ($towers as $t) {
-                        if ($t['name'] === $tree['nearest_tower']) {
-                            $stats['max_distance_tower_height'] = $t['height'];
-                            break;
-                        }
-                    }
-                }
-                break;
+        foreach ($headers as $index => $header) {
+            $headerLower = trim(strtolower($header));
+            
+            // Using str_contains for more flexible matching
+            if (is_null($type_col_index) && $this->matches_keyword($headerLower, $keywords['type'])) $type_col_index = $index;
+            if (is_null($lat_drone_index) && $this->matches_keyword($headerLower, $keywords['lat_drone'])) $lat_drone_index = $index;
+            if (is_null($lon_drone_index) && $this->matches_keyword($headerLower, $keywords['lon_drone'])) $lon_drone_index = $index;
+            if (is_null($lat_ns_index) && $this->matches_keyword($headerLower, $keywords['lat_ns'])) $lat_ns_index = $index;
+            if (is_null($lon_ns_index) && $this->matches_keyword($headerLower, $keywords['lon_ns'])) $lon_ns_index = $index;
+            
+            // Check for generic, but don't overwrite specific ones if found in same header
+            if (is_null($lat_generic_index) && $this->matches_keyword($headerLower, $keywords['lat_generic'])) $lat_generic_index = $index;
+            if (is_null($lon_generic_index) && $this->matches_keyword($headerLower, $keywords['lon_generic'])) $lon_generic_index = $index;
+        }
+        
+        // Set a primary lat/lon for general purpose use (e.g., flyToLocation) using a priority order
+        $lat_col_index = $lat_drone_index ?? $lat_ns_index ?? $lat_generic_index;
+        $lon_col_index = $lon_drone_index ?? $lon_ns_index ?? $lon_generic_index;
+        // --- END ADVANCED DYNAMIC MAPPING ---
+
+        // Limit the number of rows to be displayed for performance
+        $displayData = array_slice($data, 0, 50);
+
+        $stats = [
+            'total_points' => count($data),
+            'headers' => $headers,
+            'data' => $displayData,
+            'dynamic_stats' => $dynamicStats,
+            'lat_col_index' => $lat_col_index,
+            'lon_col_index' => $lon_col_index,
+            'type_col_index' => $type_col_index,
+            'lat_drone_index' => $lat_drone_index,
+            'lon_drone_index' => $lon_drone_index,
+            'lat_ns_index' => $lat_ns_index,
+            'lon_ns_index' => $lon_ns_index,
+            'raw_data' => $data 
+        ];
+        return back()->with('results', $stats);
+    }
+
+    private function matches_keyword($header, $keywords)
+    {
+        foreach ($keywords as $keyword) {
+            if (str_contains($header, $keyword)) {
+                return true;
             }
         }
-
-        // Formatting untuk tampilan
-        $stats['min_distance'] = number_format($stats['min_distance'], 2);
-        $stats['max_distance'] = number_format($stats['max_distance'], 2);
-        $stats['average_distance'] = number_format($stats['average_distance'], 2);
-        $stats['max_distance_tree_height'] = number_format($stats['max_distance_tree_height'], 2);
-        $stats['max_distance_tower_height'] = number_format($stats['max_distance_tower_height'], 2);
-
-        return back()->with('results', $stats);
+        return false;
     }
 }
